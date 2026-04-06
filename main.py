@@ -1,77 +1,120 @@
-import time
+# Умная автозамена раскладки — OOP версия
 import keyboard
-import win32clipboard
-import win32con
-from tendo import singleton
-me = singleton.SingleInstance()
+import pystray
+from PIL import Image, ImageDraw
+import time
+import sys
+from abc import ABC, abstractmethod
 
-eng_to_rus = {
-    'q': 'й', 'w': 'ц', 'e': 'у', 'r': 'к', 't': 'е', 'y': 'н', 'u': 'г', 'i': 'ш', 'o': 'щ', 'p': 'з', '[': 'х', ']': 'ъ',
-    'a': 'ф', 's': 'ы', 'd': 'в', 'f': 'а', 'g': 'п', 'h': 'р', 'j': 'о', 'k': 'л', 'l': 'д', ';': 'ж', '\'': 'э',
-    'z': 'я', 'x': 'ч', 'c': 'с', 'v': 'м', 'b': 'и', 'n': 'т', 'm': 'ь', ',': 'б', '.': 'ю', '/': '.',
-    '`': 'ё',
-    '@': '"', '#': '№', '$': ';', '^': ':', '&': '?'
-}
+class LayoutConverter(ABC):
+    """Абстрактный конвертер раскладки"""
+    def __init__(self):
+        self.en_to_ru = {
+            'q':'й','w':'ц','e':'у','r':'к','t':'е','y':'н','u':'г','i':'ш','o':'щ','p':'з',
+            '[':'х',']':'ъ','a':'ф','s':'ы','d':'в','f':'а','g':'п','h':'р','j':'о','k':'л',
+            'l':'д',';':'ж',"'":'э','z':'я','x':'ч','c':'с','v':'м','b':'и','n':'т','m':'ь',
+            ',':'б','.':'ю',
+            'Q':'Й','W':'Ц','E':'У','R':'К','T':'Е','Y':'Н','U':'Г','I':'Ш','O':'Щ','P':'З',
+            '{':'Х','}':'Ъ','A':'Ф','S':'Ы','D':'В','F':'А','G':'П','H':'Р','J':'О','K':'Л',
+            'L':'Д',':':'Ж','"':'Э','Z':'Я','X':'Ч','C':'С','V':'М','B':'И','N':'Т','M':'Ь',
+            '<':'Б','>':'Ю'
+        }
+        self.current_word = ""
 
-rus_to_eng = {v: k for k, v in eng_to_rus.items()}
+    @abstractmethod
+    def fix_word(self, word: str) -> str:
+        pass
 
-def convert_layout(text):
-    result = []
-    for ch in text:
-        lower = ch.lower()
-        if lower in eng_to_rus:
-            converted = eng_to_rus[lower]
-        elif lower in rus_to_eng:
-            converted = rus_to_eng[lower]
-        else:
-            converted = ch
+    def is_russian(self, key: str) -> bool:
+        return key in "йцукенгшщзхъфывапролджэячсмитьбюЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ"
 
-        if ch.isupper():
-            converted = converted.upper()
-        result.append(converted)
-    return ''.join(result)
 
-def get_clipboard_text():
-    win32clipboard.OpenClipboard()
-    try:
-        data = win32clipboard.GetClipboardData(win32con.CF_UNICODETEXT)
-    except TypeError:
-        data = ''
-    win32clipboard.CloseClipboard()
-    return data
+class RuConverter(LayoutConverter):
+    def fix_word(self, word: str) -> str:
+        return ''.join(self.en_to_ru.get(c, c) for c in word)
 
-def set_clipboard_text(text):
-    win32clipboard.OpenClipboard()
-    win32clipboard.EmptyClipboard()
-    win32clipboard.SetClipboardData(win32con.CF_UNICODETEXT, text)
-    win32clipboard.CloseClipboard()
 
-def simulate_ctrl_c():
-    keyboard.press_and_release('ctrl+c')
+class AutoLayoutApp:
+    def __init__(self):
+        self.converter = RuConverter()
+        self.enabled = True
+        self.last_word = ""
 
-def simulate_ctrl_v():
-    keyboard.press_and_release('ctrl+v')
+    def create_tray_icon(self):
+        img = Image.new('RGB', (64, 64), color=(0, 120, 215))
+        draw = ImageDraw.Draw(img)
+        draw.text((18, 15), "RU", fill=(255, 255, 255))
+        return img
 
-def on_hotkey():
-    oldtext = get_clipboard_text()
-    simulate_ctrl_c()
-    time.sleep(0.1)
+    def on_key(self, event):
+        if not self.enabled or event.event_type != "down":
+            return
 
-    text = get_clipboard_text()
-    if not text or text == oldtext:
-        return
+        key = event.name
 
-    converted = convert_layout(text)
-    if converted == text:
-        return
+        # Конец слова
+        if key in ['space', 'enter', 'tab', '.', ',', '!', '?', ';', ':']:
+            self.last_word = ""
+            return
 
-    set_clipboard_text(converted)
-    time.sleep(0.05)
-    simulate_ctrl_v()
+        # Backspace
+        if key == 'backspace':
+            if self.last_word:
+                self.last_word = self.last_word[:-1]
+            return
 
-def main():
-    keyboard.add_hotkey('ctrl+\'', on_hotkey)
-    keyboard.wait()
+        # Игнорируем русские буквы
+        if self.converter.is_russian(key):
+            return
 
-if __name__ == '__main__':
-    main()
+        # Добавляем только английские символы
+        if len(key) == 1 and key.isascii() and not key.isspace():
+            self.last_word += key
+            print(f"Буфер: {self.last_word}")   # отладка
+
+    def convert_last(self):
+        if not self.enabled or not self.last_word:
+            return
+
+        fixed = self.converter.fix_word(self.last_word)
+
+        if fixed != self.last_word:
+            # Удаляем старое слово
+            for _ in range(len(self.last_word)):
+                keyboard.send('backspace')
+                time.sleep(0.007)
+            keyboard.write(fixed)
+            print(f"✅ Исправлено: {self.last_word} → {fixed}")
+            self.last_word = ""
+
+    def toggle(self, icon=None, item=None):
+        self.enabled = not self.enabled
+        status = "ВКЛ ✅" if self.enabled else "ВЫКЛ ❌"
+        print(f"Автозамена: {status}")
+        if icon:
+            icon.notify("Автозамена", f"Статус: {status}")
+            icon.update_menu()
+
+    def run(self):
+        keyboard.hook(self.on_key)
+        keyboard.add_hotkey('f8', self.convert_last)
+
+        menu = pystray.Menu(
+            pystray.MenuItem(lambda i: f"Автозамена: {'Вкл ✅' if self.enabled else 'Выкл ❌'}",
+                            self.toggle, checked=lambda i: self.enabled),
+            pystray.Menu.SEPARATOR,
+            pystray.MenuItem("Выход", lambda i, it: (i.stop(), sys.exit(0)))
+        )
+
+        icon = pystray.Icon("ru_fix", self.create_tray_icon(), "Автозамена (F8)", menu)
+
+        print("🚀 Автозамена запущена!")
+        print("Нажми F8 после набора слова — оно исправится")
+        print("Пример: pyfxtybt → F8 → привет")
+
+        icon.run()
+
+
+if __name__ == "__main__":
+    app = AutoLayoutApp()
+    app.run()
